@@ -7,60 +7,67 @@
 # 1. This program depends on all the functions it calls being 8-bit safe.
 # Particularly, it passes arbitrary user strings to pwd.getpwnam(), open(),
 # and re.split(), among other functions.
-# 2. This program MUST NOT be run as a privileged user (including root).
-# 3. This program WILL follow symbolic links.
-# 4. This program WILL follow ~user/.lfingerd-extra/foo/bar if
-# ~user/.lfingerd-extra is a directory or a symbolic link to a directory.
+# 2. This program should not be run as a privileged user (including root).
+# 3. This program will follow symlinks if your system does not support the
+# O_NOFOLLOW flag for open(2).
 
 
 # Initialization
 import re, sys, os, pwd, errno, exceptions
 
-VERSION = "2.0"
+VERSION = "2.1"
 VERSION_INFO = "lfingerd -- Version " + VERSION
 COPYRIGHT_INFO = VERSION_INFO + """
-Copyright (c) 2002, 2003 Dwayne C. Litzenberger
-All rights reserved.
+Copyright (c) 2002, 2003 Dwayne C. Litzenberger <dlitz@dlitz.net>
 
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions
-are met:
-1. Redistributions of source code must retain the above copyright
-   notice, this list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright
-   notice, this list of conditions and the following disclaimer in the
-   documentation and/or other materials provided with the distribution.
-3. Neither the name of this work nor the names of its contributors
-   may be used to endorse or promote products derived from this software
-   without specific prior written permission.
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
 
-THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
-OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
-HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
-OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
-SUCH DAMAGE.
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
+
+def mysafeopen(homedir, filename):
+	global ALLOW_SYMLINKS
+	if os.path.split(filename)[0] != "":
+		raise ValueError, "Filename contained path information"
+	flags = os.O_RDONLY
+	if not ALLOW_SYMLINKS:
+		flags |= os.O_NOFOLLOW
+	fd = os.open(os.path.join(homedir, filename), flags, 0)
+	file = os.fdopen(fd, "rb")
+	return file
 
 CRLF = "\x0d\x0a"
 RequestError = "finger: sorry, no information available."
 LOWEST_UID = 500
 DEBUG = False
+ALLOW_SYMLINKS = False
 
 # Parse the command line
 if "--debug" in sys.argv:
 	DEBUG = True
 if "--lowestuid" in sys.argv:
 	LOWEST_UID = long(sys.argv[sys.argv.index("--lowestuid") + 1])
+if "--allow-symlinks" in sys.argv:
+	ALLOW_SYMLINKS = True
 
 # Prevent accidentally running lfingerd as root.
 if os.geteuid() == 0:
-	raise RuntimeError, "FATAL ERROR: It is not safe to run this program as a privileged user.  Please read the source code for important security considerations documentation."
+	raise RuntimeError, "FATAL ERROR: It is probably unsafe to run this program as a privileged user.  Please read the source code for more information."
 
 # Get the request
 request = re.split(r"\s", sys.stdin.readline()) 
@@ -85,9 +92,6 @@ try:
 		sys.exit(0)
 	elif username == "lfingerd-copyright":
 		sys.stdout.write(COPYRIGHT_INFO.replace("\n", CRLF) + CRLF)
-		sys.exit(0)
-	elif username == "lfingerd-advice":
-		sys.stdout.write("Wennschon, dennschon!" + CRLF)
 		sys.exit(0)
 	
 	# Split out the "+extra" part of "username+extra"
@@ -115,15 +119,9 @@ try:
 	for filename in (".lfingerd_data" + extra, ".plan" + extra,
 			".lfingerd_data_default", ".plan"):
 		try:
-			# SECURITY WARNING:  If homedir/filename is a
-			# directory, then a remote user can read any file as
-			# the finger daemon.
-			# SECURITY WARNING:  If homedir/filename is a symlink,
-			# then users can potentially read files as the finger
-			# daemon.
-			file = open(os.path.join(homedir, filename), "r")
+			file = mysafeopen(homedir, filename)
 			break
-		except IOError:
+		except (IOError, OSError, ValueError):
 			pass
 	if file is None:
 		raise RequestError, "No information found"
