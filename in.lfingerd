@@ -1,0 +1,132 @@
+#!/usr/bin/perl -T -w
+sub version_information {
+	return <<EOF;
+lfingerd -- Version 1.0
+EOF
+}
+
+sub copyright_information {
+	return version_information() . <<EOF;
+Copyright (c) Dwayne C. Litzenberger
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. Neither the name of this work nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+EOF
+}
+
+# lfingerd is a simple finger daemon.  See RFC 1288.
+
+use strict;
+
+sub error_exit() {
+	print "finger: sorry, no information available.\n";
+	exit(1);
+}
+
+my $verbose = 0;
+my $username;
+my $extra;
+
+my @request = split(/\s+/, <STDIN>);
+
+if (!@request) {
+	error_exit();
+}
+
+# {W} - Verbose switch
+if ($request[0] eq '/W') {
+	$verbose = 1;
+	shift(@request);
+}
+
+if (!@request) {
+	error_exit();
+}
+
+# We don't forward requests.  Crap out on "@whatever".
+$username = $request[0];
+if ($username =~ /\@/) {
+	error_exit();
+}
+
+if ($username eq "lfingerd-version") {
+	print version_information();
+	exit(0);
+} elsif ($username eq "lfingerd-copyright") {
+	print copyright_information();
+	exit(0);
+}
+
+# Split out the "+extra" part of "username+extra"
+$username =~ /^([^\+]+)(\+.*)?$/;
+($username, $extra) = ($1, $2);
+if (defined($extra)) {
+	$extra =~ s/^\+/-/;	# Convert the delimiter to a "-"
+} else {
+	$extra = '';
+}
+
+# Find out what $HOME is
+my @pwent = getpwnam($username);
+if (!@pwent) {
+	error_exit();
+}
+my $homedir = $pwent[7];
+
+# Check for $HOME/.nofinger
+if (open(FILE, "<$homedir/.nofinger")) {
+	close(FILE);
+	error_exit();
+}
+
+# Look for the files in the following order:
+# $HOME/.lfingerd_data[-extra]
+# $HOME/.plan[-extra]
+# $HOME/.lfingerd_data_default
+# $HOME/.plan
+if (open(FILE, "<$homedir/.lfingerd_data$extra")) {
+	;
+} elsif (open(FILE, "<$homedir/.plan$extra")) {
+	;
+} elsif (open(FILE, "<$homedir/.lfingerd_data_default")) {
+	;
+} elsif (open(FILE, "<$homedir/.plan")) {
+	;
+} else {
+	error_exit();
+}
+
+# Read the file
+my $data = join('', <FILE>);
+close(FILE);
+# Newline conversion
+$data =~ s/\x0d\x0a/\x0d/g;	# CRLF -> CR
+$data =~ s/\x0a/\x0d/g;		# LF -> CR
+$data =~ s/\x0d/\x0d\x0a/g;	# CR -> CRLF
+# always have trailing newline
+$data =~ s/(\x0d\x0a)?\Z/\x0d\x0a/gm;
+# Output the file
+print $data;
+exit(0);
