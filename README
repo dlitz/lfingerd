@@ -1,0 +1,6 @@
+lfingerd - a simple finger protocol daemon
+https://github.com/dlitz/lfingerd/
+
+lfingerd is a simple Finger User Information Protocol (RFC 1288) server,
+written in Python, that allows each individual user to have full control over
+what is returned.
