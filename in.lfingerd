@@ -1,13 +1,25 @@
-#!/usr/bin/perl -T -w
-sub version_information {
-	return <<EOF;
-lfingerd -- Version 1.1
-EOF
-}
+#!/usr/bin/python2.2
+"""lfingerd is a simple finger server.  See RFC 1288"""
 
-sub copyright_information {
-	return version_information() . <<EOF;
-Copyright (c) 2002 Dwayne C. Litzenberger
+# This is a rewrite of lfingerd 1.x, which was written in Perl.
+
+# SECURITY CONSIDERATIONS:
+# 1. This program depends on all the functions it calls being 8-bit safe.
+# Particularly, it passes arbitrary user strings to pwd.getpwnam(), open(),
+# and re.split(), among other functions.
+# 2. This program MUST NOT be run as a privileged user (including root).
+# 3. This program WILL follow symbolic links.
+# 4. This program WILL follow ~user/.lfingerd-extra/foo/bar if
+# ~user/.lfingerd-extra is a directory or a symbolic link to a directory.
+
+
+# Initialization
+import re, sys, os, pwd, errno, exceptions
+
+VERSION = "2.0"
+VERSION_INFO = "lfingerd -- Version " + VERSION
+COPYRIGHT_INFO = VERSION_INFO + """
+Copyright (c) 2002, 2003 Dwayne C. Litzenberger
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -33,105 +45,106 @@ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
 OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 SUCH DAMAGE.
-EOF
-}
+"""
 
-# lfingerd is a simple finger daemon.  See RFC 1288.
+CRLF = "\x0d\x0a"
+RequestError = "finger: sorry, no information available."
+LOWEST_UID = 500
+DEBUG = False
 
-use strict;
+# Parse the command line
+if "--debug" in sys.argv:
+	DEBUG = True
+if "--lowestuid" in sys.argv:
+	LOWEST_UID = long(sys.argv[sys.argv.index("--lowestuid") + 1])
 
-sub error_exit() {
-	print "finger: sorry, no information available.\n";
-	exit(1);
-}
+# Prevent accidentally running lfingerd as root.
+if os.geteuid() == 0:
+	raise RuntimeError, "FATAL ERROR: It is not safe to run this program as a privileged user.  Please read the source code for important security considerations documentation."
 
-my $verbose = 0;
-my $username;
-my $extra;
+# Get the request
+request = re.split(r"\s", sys.stdin.readline()) 
 
-my @request = split(/\s+/, <STDIN>);
-
-if (!@request) {
-	error_exit();
-}
-
-# {W} - Verbose switch
-if ($request[0] eq '/W') {
-	$verbose = 1;
-	shift(@request);
-}
-
-if (!@request) {
-	error_exit();
-}
-
-# We don't forward requests.  Crap out on "@whatever".
-$username = $request[0];
-if ($username =~ /\@/) {
-	error_exit();
-}
-
-if ($username eq "lfingerd-version") {
-	print version_information();
-	exit(0);
-} elsif ($username eq "lfingerd-copyright") {
-	print copyright_information();
-	exit(0);
-}
-
-# Split out the "+extra" part of "username+extra"
-$username =~ /^([^\+]+)(\+.*)?$/;
-($username, $extra) = ($1, $2);
-if (defined($extra)) {
-	$extra =~ s/^\+/-/;	# Convert the delimiter to a "-"
-	# Extra Paranoia - It's probably safe to comment out or modify the next
-	# three lines, but most people probably won't need to.
-	if ($extra =~ /[^A-Za-z0-9\-\.]/)  {
-		error_exit();
-	}
-} else {
-	$extra = '';
-}
-
-# Find out what $HOME is
-my @pwent = getpwnam($username);
-if (!@pwent) {
-	error_exit();
-}
-my $homedir = $pwent[7];
-
-# Check for $HOME/.nofinger
-if (open(FILE, "<$homedir/.nofinger")) {
-	close(FILE);
-	error_exit();
-}
-
-# Look for the files in the following order:
-# $HOME/.lfingerd_data[-extra]
-# $HOME/.plan[-extra]
-# $HOME/.lfingerd_data_default
-# $HOME/.plan
-if (open(FILE, "< $homedir/.lfingerd_data$extra ")) {
-	;
-} elsif (open(FILE, "< $homedir/.plan$extra ")) {
-	;
-} elsif (open(FILE, "< $homedir/.lfingerd_data_default ")) {
-	;
-} elsif (open(FILE, "< $homedir/.plan ")) {
-	;
-} else {
-	error_exit();
-}
-
-# Read the file
-my $data = join('', <FILE>);
-close(FILE);
-# Newline conversion
-$data =~ s/\x0d\x0a/\x0d/g;	# CRLF -> CR
-$data =~ s/\x0a/\x0d/g;		# LF -> CR
-$data =~ s/\x0d/\x0d\x0a/g;	# CR -> CRLF
-# always have trailing newline
-$data =~ s/(\x0d\x0a)?\Z/\x0d\x0a/gm;
-# Output the file
-print $data;
-exit(0);
+try:
+	# Initial request-parsing step
+	if not request:
+		raise RequestError, "Blank request"
+	if request[0] == "/W":
+		request = request[1:]	# ignore verbose switch
+	if not request:
+		raise RequestError, "Blank request after option parsing"
+	
+	# We don't forward requests, so crap out on "@whatever"
+	username = request[0]
+	if "@" in username:
+		raise RequestError, "Client requested request forwarding"
+	
+	# Look for special lfingerd usernames
+	if username == "lfingerd-version":
+		sys.stdout.write(VERSION_INFO.replace("\n", CRLF) + CRLF)
+		sys.exit(0)
+	elif username == "lfingerd-copyright":
+		sys.stdout.write(COPYRIGHT_INFO.replace("\n", CRLF) + CRLF)
+		sys.exit(0)
+	elif username == "lfingerd-advice":
+		sys.stdout.write("Wennschon, dennschon!" + CRLF)
+		sys.exit(0)
+	
+	# Split out the "+extra" part of "username+extra"
+	tmp = username.split("+",1)
+	username = tmp[0]
+	if len(tmp) > 1:
+		extra = "-" + tmp[1]
+	else:
+		extra = ""
+	
+	# Find out the user's home directory
+	# This will raise an exception if the user doesn't exist
+	passwd = pwd.getpwnam(username)
+	uid = passwd[2]
+	homedir = passwd[5]
+	
+	if uid < LOWEST_UID:
+		raise RequestError, "Request made for too-low uid %d" % uid 
+	
+	# Check for $HOME/.nofinger
+	if os.path.exists(os.path.join(homedir, ".nofinger")):
+		raise RequestError, "$HOME/.nofinger found"
+	
+	file = None
+	for filename in (".lfingerd_data" + extra, ".plan" + extra,
+			".lfingerd_data_default", ".plan"):
+		try:
+			# SECURITY WARNING:  If homedir/filename is a
+			# directory, then a remote user can read any file as
+			# the finger daemon.
+			# SECURITY WARNING:  If homedir/filename is a symlink,
+			# then users can potentially read files as the finger
+			# daemon.
+			file = open(os.path.join(homedir, filename), "r")
+			break
+		except IOError:
+			pass
+	if file is None:
+		raise RequestError, "No information found"
+		
+	# Send the file, converting newlines
+	block = file.read(1024).replace("\n", CRLF)
+	lastblock = ""
+	while block != "":
+		lastblock = block
+		sys.stdout.write(block)
+		block = file.read(1024).replace("\n", CRLF)
+	
+	# Ensure there is a trailing newline
+	if lastblock[-2:] != CRLF:
+		sys.stdout.write(CRLF)
+	
+	file.close()
+	sys.exit(0)
+except:
+	if DEBUG or sys.exc_info()[0] == exceptions.SystemExit:
+		raise
+	else:
+		sys.stdout.write(RequestError + CRLF)
+		sys.exit(0)
